@@ -260,7 +260,7 @@ bool Metadata::Expired() const {
 
   int64_t now;
   rocksdb::Env::Default()->GetCurrentTime(&now);
-  return expire < now;
+  return expire <= now;
 }
 
 ListMetadata::ListMetadata(bool generate_version) : Metadata(kRedisList, generate_version) {
