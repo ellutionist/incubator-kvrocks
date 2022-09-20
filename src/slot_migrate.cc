@@ -568,6 +568,10 @@ Status SlotMigrate::MigrateOneKey(rocksdb::Slice key, std::string *restore_cmds)
     return Status(Status::cOK, "empty");;
   }
 
+  if (metadata.Expired()) {
+    return Status(Status::cOK, "expired");;
+  }
+
   // Construct command according to type of the key
   switch (metadata.Type()) {
     case kRedisString: {
