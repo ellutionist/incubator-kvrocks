@@ -302,7 +302,7 @@ Status SlotMigrate::SendSnapshot(void) {
 
     // Add key's constructed cmd to restore_cmds, send pipeline
     // or not according to current_pipeline_size_
-    auto stat = MigrateOneKey(rocksdb::Slice(user_key), &restore_cmds);
+    auto stat = MigrateOneKey(user_key, iter->value(), &restore_cmds);
     if (stat.IsOK()) {
       if (stat.Msg() == "ok") migratedkey_cnt++;
       if (stat.Msg() == "expired") expiredkey_cnt++;
@@ -543,29 +543,19 @@ bool SlotMigrate::CheckResponseWithCounts(int sock_fd, int total) {
   return true;  // Can't reach here
 }
 
-bool SlotMigrate::GetSlotKeyMetadata(const rocksdb::Slice &prefix_key, std::string *bytes) {
-  rocksdb::ReadOptions read_options;
-  read_options.snapshot = slot_snapshot_;
-  auto s = storage_->GetDB()->Get(read_options, storage_->GetCFHandle("metadata"), prefix_key, bytes);
-  if (!s.ok()) {
-    LOG(ERROR) << "[migrate] Failed to get metadata of key: " << prefix_key.ToString()
-      << ", Err: " << s.ToString();
-    return false;
-  }
-  return true;
-}
-
-Status SlotMigrate::MigrateOneKey(rocksdb::Slice key, std::string *restore_cmds) {
+Status SlotMigrate::MigrateOneKey(const rocksdb::Slice &key, const rocksdb::Slice &value, std::string *restore_cmds) {
   std::string prefix_key;
   AppendNamespacePrefix(key, &prefix_key);
-  std::string bytes;
-  bool st = GetSlotKeyMetadata(prefix_key, &bytes);
-  if (!st) return Status(Status::NotOK, "[migrate] Failed to get key's metadata");
+  std::string bytes = value.ToString();
   Metadata metadata(kRedisNone, false);
   metadata.Decode(bytes);
   if (metadata.Type() != kRedisString && metadata.size == 0) {
     LOG(INFO) << "[migrate] No elements of key: " << prefix_key;
-    return Status(Status::cOK, "empty");;
+    return Status(Status::cOK, "empty");
+  }
+
+  if (metadata.Expired()) {
+    return Status(Status::cOK, "expired");
   }
 
   // Construct command according to type of the key
@@ -601,11 +591,8 @@ bool SlotMigrate::MigrateSimpleKey(const rocksdb::Slice &key, const Metadata &me
                                    const std::string &bytes, std::string *restore_cmds) {
   std::vector<std::string> command = {"set", key.ToString(), bytes.substr(5, bytes.size() - 5)};
   if (metadata.expire > 0) {
-    int64_t now;
-    rocksdb::Env::Default()->GetCurrentTime(&now);
-    int32_t ttl = metadata.expire - uint32_t(now);
-    command.emplace_back("EX");
-    command.emplace_back(std::to_string(ttl));
+    command.emplace_back("EXAT");
+    command.emplace_back(std::to_string(metadata.expire));
   }
   *restore_cmds += Redis::MultiBulkString(command, false);
   current_pipeline_size_++;
