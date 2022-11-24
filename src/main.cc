@@ -26,6 +26,14 @@
 
 #include <iomanip>
 #include <ostream>
+#include <string>
+#include <thread>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "config/config.h"
+#include "types/redis_string.h"
 #ifdef __linux__
 #define _XOPEN_SOURCE 700
 #else
@@ -40,6 +48,7 @@
 
 #include "config.h"
 #include "fd_util.h"
+#include "pika.h"
 #include "scope_exit.h"
 #include "server/server.h"
 #include "storage/storage.h"
@@ -127,8 +136,19 @@ struct NewOpt {
 static void printUsage(const char *program) {
   std::cout << program << " implements the Redis protocol based on rocksdb" << std::endl
             << "Usage:" << std::endl
+
             << std::left << new_opt << "-c, --config <filename>"
             << "set config file to <filename>, or `-' for stdin" << std::endl
+
+            << std::left << new_opt << "-p, --pika <db_path>"
+            << "pika db path" << std::endl
+
+            << std::left << new_opt << "--prefix <scan prefix>"
+            << "scan prefix, multiple accepted" << std::endl
+
+            << std::left << new_opt << "-n, --scan-thread <thread>"
+            << "number of scan thread" << std::endl
+
             << new_opt << "-v, --version"
             << "print version information" << std::endl
             << new_opt << "-h, --help"
@@ -149,6 +169,12 @@ static CLIOptions parseCommandLineOptions(int argc, char **argv) {
     } else if (argv[i] == "-v"sv || argv[i] == "--version"sv) {
       printVersion(std::cout);
       std::exit(0);
+    } else if (argv[i] == "-p"sv || argv[i] == "--pika"sv) {
+      opts.pika_db.emplace(argv[++i]);
+    } else if (argv[i] == "--prefix"sv) {
+      opts.scan_prefixes.emplace_back(argv[++i]);
+    } else if (argv[i] == "-n"sv || argv[i] == "--scan-threads"sv) {
+      opts.n_scan_threads.emplace(std::stoi(argv[++i]));
     } else if (argv[i] == "-h"sv || argv[i] == "--help"sv) {
       printUsage(*argv);
       std::exit(0);
@@ -159,6 +185,17 @@ static CLIOptions parseCommandLineOptions(int argc, char **argv) {
       printUsage(*argv);
       std::exit(1);
     }
+  }
+
+  if (!opts.pika_db.has_value()) {
+    std::cout << "invalid pika db path." << std::endl;
+    printUsage(*argv);
+    std::exit(1);
+  }
+
+  if (!opts.n_scan_threads.has_value()) {
+    std::cout << "invalid number of scan threads." << std::endl;
+    printUsage(*argv);
   }
 
   return opts;
@@ -339,15 +376,55 @@ int main(int argc, char *argv[]) {
     LOG(ERROR) << "Failed to open: " << s.Msg();
     return 1;
   }
-  Server server(&storage, &config);
-  srv = &server;
-  s = srv->Start();
-  if (!s.IsOK()) {
-    return 1;
-  }
-  srv->Join();
+
+  PikaDB pika(opts.pika_db.value(), std::move(opts.scan_prefixes), opts.n_scan_threads.value());
+  pika.Start();
+
+  auto &&q = pika.GetQueue();
+
+  KvPair kv;
+
+  auto t = std::thread([&] {
+    int count = 0;
+    Redis::String string_db(&storage, kDefaultNamespace);
+
+    while (true) {
+      if (!q.Pop(kv)) {
+        break;
+      }
+
+      if (kv.ttl.has_value()) {
+        auto s = string_db.SetEX(kv.key, kv.value, kv.ttl.value());
+        if (!s.ok()) {
+          LOG(ERROR) << s.ToString();
+        }
+      } else {
+        auto s = string_db.Set(kv.key, kv.value);
+        if (!s.ok()) {
+          LOG(ERROR) << s.ToString();
+        }
+      }
+      count++;
+    }
+    LOG(INFO) << "consumer thread finish, import " << count << " keys. " ;
+  });
+
+  pika.Join();
+  q.RequestShutdown();
+  t.join();
+
+  LOG(INFO) << "start to check";
+
+  storage.CloseDB();
+  // Server server(&storage, &config);
+  // srv = &server;
+  // s = srv->Start();
+  // if (!s.IsOK()) {
+  //   return 1;
+  // }
+  // srv->Join();
 
   google::ShutdownGoogleLogging();
-  libevent_global_shutdown();
+  // libevent_global_shutdown();
   return 0;
 }

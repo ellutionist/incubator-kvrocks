@@ -25,6 +25,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -63,6 +64,10 @@ struct CompactionCheckerRange {
 
 struct CLIOptions {
   std::string conf_file;
+  std::optional<std::string> pika_db;
+  std::vector<std::string> scan_prefixes;
+  std::optional<int> n_scan_threads;
+
   std::vector<std::pair<std::string, std::string>> cli_options;
 
   CLIOptions() = default;
