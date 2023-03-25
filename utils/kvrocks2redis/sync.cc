@@ -218,7 +218,7 @@ void Sync::parseKVFromLocalStorage() {
     return;
   }
 
-  s = updateNextSeq(storage_->LatestSeq() + 1);
+  s = updateNextSeq(storage_->LatestSeqNumber() + 1);
   if (!s.IsOK()) {
     LOG(ERROR) << "[kvrocks2redis] Failed to update next sequence: " << s.Msg();
   }
@@ -246,7 +246,7 @@ Status Sync::readNextSeqFromFile(rocksdb::SequenceNumber *seq) {
   return Status::OK();
 }
 
-Status Sync::writeNextSeqToFile(rocksdb::SequenceNumber seq) {
+Status Sync::writeNextSeqToFile(rocksdb::SequenceNumber seq) const {
   std::string seq_string = std::to_string(seq);
   // append to 21 byte (overwrite entire first 21 byte, aka the largest SequenceNumber size )
   int append_byte = 21 - static_cast<int>(seq_string.size());

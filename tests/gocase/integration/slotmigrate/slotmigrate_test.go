@@ -377,10 +377,9 @@ func TestSlotMigrateThreeNodes(t *testing.T) {
 		require.NoError(t, rdb0.Do(ctx, "clusterx", "SETNODES", clusterNodes, "2").Err())
 		require.NoError(t, rdb1.Do(ctx, "clusterx", "SETNODES", clusterNodes, "2").Err())
 		require.NoError(t, rdb2.Do(ctx, "clusterx", "SETNODES", clusterNodes, "2").Err())
-		time.Sleep(time.Second)
 
 		// check destination importing status
-		requireImportState(t, rdb2, slot, SlotImportStateFailed)
+		waitForImportState(t, rdb2, slot, SlotImportStateFailed)
 	})
 }
 
@@ -541,6 +540,50 @@ func TestSlotMigrateDataType(t *testing.T) {
 		for _, typ := range []string{"string", "list", "hash", "set", "zset", "bitmap", "sortint", "stream"} {
 			require.ErrorContains(t, rdb0.Exists(ctx, keys[typ]).Err(), "MOVED")
 		}
+	})
+
+	t.Run("MIGRATE - increment sync stream from WAL", func(t *testing.T) {
+		slot := 40
+		keys := make(map[string]string, 0)
+		for _, typ := range []string{"stream"} {
+			keys[typ] = fmt.Sprintf("%s_{%s}", typ, util.SlotTable[slot])
+			require.NoError(t, rdb0.Del(ctx, keys[typ]).Err())
+		}
+		for i := 1; i < 1000; i++ {
+			idxStr := strconv.FormatInt(int64(i), 10)
+			require.NoError(t, rdb0.XAdd(ctx, &redis.XAddArgs{
+				Stream: keys["stream"],
+				ID:     idxStr + "-0",
+				Values: []string{"key" + idxStr, "value" + idxStr},
+			}).Err())
+		}
+		streamInfo := rdb0.XInfoStream(ctx, keys["stream"]).Val()
+		require.EqualValues(t, "999-0", streamInfo.LastGeneratedID)
+		require.EqualValues(t, 999, streamInfo.EntriesAdded)
+		require.EqualValues(t, "0-0", streamInfo.MaxDeletedEntryID)
+		require.EqualValues(t, 999, streamInfo.Length)
+
+		// Slowdown the migration speed to prevent running before next increment commands
+		require.NoError(t, rdb0.ConfigSet(ctx, "migrate-speed", "256").Err())
+		defer func() {
+			require.NoError(t, rdb0.ConfigSet(ctx, "migrate-speed", "4096").Err())
+		}()
+		require.Equal(t, "OK", rdb0.Do(ctx, "clusterx", "migrate", slot, id1).Val())
+		newStreamID := "1001"
+		require.NoError(t, rdb0.XAdd(ctx, &redis.XAddArgs{
+			Stream: keys["stream"],
+			ID:     newStreamID + "-0",
+			Values: []string{"key" + newStreamID, "value" + newStreamID},
+		}).Err())
+		require.NoError(t, rdb0.XDel(ctx, keys["stream"], "1-0").Err())
+		require.NoError(t, rdb0.Do(ctx, "XSETID", keys["stream"], "1001-0", "MAXDELETEDID", "2-0").Err())
+		waitForMigrateStateInDuration(t, rdb0, slot, SlotMigrationStateSuccess, time.Minute)
+
+		streamInfo = rdb1.XInfoStream(ctx, keys["stream"]).Val()
+		require.EqualValues(t, "1001-0", streamInfo.LastGeneratedID)
+		require.EqualValues(t, 1000, streamInfo.EntriesAdded)
+		require.EqualValues(t, "2-0", streamInfo.MaxDeletedEntryID)
+		require.EqualValues(t, 999, streamInfo.Length)
 	})
 
 	t.Run("MIGRATE - Migrating empty stream", func(t *testing.T) {
@@ -858,11 +901,5 @@ func waitForImportState(t testing.TB, client *redis.Client, n int, state SlotImp
 		i := client.ClusterInfo(context.Background()).Val()
 		return strings.Contains(i, fmt.Sprintf("importing_slot: %d", n)) &&
 			strings.Contains(i, fmt.Sprintf("import_state: %s", state))
-	}, 5*time.Second, 100*time.Millisecond)
-}
-
-func requireImportState(t testing.TB, client *redis.Client, n int, state SlotImportState) {
-	i := client.ClusterInfo(context.Background()).Val()
-	require.Contains(t, i, fmt.Sprintf("importing_slot: %d", n))
-	require.Contains(t, i, fmt.Sprintf("import_state: %s", state))
+	}, 10*time.Second, 100*time.Millisecond)
 }

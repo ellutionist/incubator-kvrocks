@@ -38,7 +38,6 @@
 #include "cluster/slot_migrate.h"
 #include "commands/commander.h"
 #include "lua.hpp"
-#include "rw_lock.h"
 #include "server/redis_connection.h"
 #include "stats/log_collector.h"
 #include "stats/stats.h"
@@ -128,7 +127,7 @@ class Server {
   bool IsStopped() { return stop_; }
   bool IsLoading() { return is_loading_; }
   Config *GetConfig() { return config_; }
-  Status LookupAndCreateCommand(const std::string &cmd_name, std::unique_ptr<Redis::Commander> *cmd);
+  static Status LookupAndCreateCommand(const std::string &cmd_name, std::unique_ptr<Redis::Commander> *cmd);
   void AdjustOpenFilesLimit();
 
   Status AddMaster(const std::string &host, uint32_t port, bool force_reconnect);
@@ -173,7 +172,7 @@ class Server {
   void GetRoleInfo(std::string *info);
   void GetCommandsStatsInfo(std::string *info);
   void GetInfo(const std::string &ns, const std::string &section, std::string *info);
-  std::string GetRocksDBStatsJson();
+  std::string GetRocksDBStatsJson() const;
   ReplState GetReplicationState();
 
   void PrepareRestoreDB();
@@ -198,12 +197,12 @@ class Server {
 
   lua_State *Lua() { return lua_; }
   Status ScriptExists(const std::string &sha);
-  Status ScriptGet(const std::string &sha, std::string *body);
-  Status ScriptSet(const std::string &sha, const std::string &body);
+  Status ScriptGet(const std::string &sha, std::string *body) const;
+  Status ScriptSet(const std::string &sha, const std::string &body) const;
   void ScriptReset();
   void ScriptFlush();
 
-  Status Propagate(const std::string &channel, const std::vector<std::string> &tokens);
+  Status Propagate(const std::string &channel, const std::vector<std::string> &tokens) const;
   Status ExecPropagatedCommand(const std::vector<std::string> &tokens);
   Status ExecPropagateScriptCommand(const std::vector<std::string> &tokens);
 
@@ -214,8 +213,8 @@ class Server {
   LogCollector<SlowEntry> *GetSlowLog() { return &slow_log_; }
   void SlowlogPushEntryIfNeeded(const std::vector<std::string> *args, uint64_t duration);
 
-  std::unique_ptr<RWLock::ReadLock> WorkConcurrencyGuard();
-  std::unique_ptr<RWLock::WriteLock> WorkExclusivityGuard();
+  std::shared_lock<std::shared_mutex> WorkConcurrencyGuard();
+  std::unique_lock<std::shared_mutex> WorkExclusivityGuard();
 
   Stats stats_;
   Engine::Storage *storage_;
@@ -227,7 +226,7 @@ class Server {
   void UpdateWatchedKeysFromArgs(const std::vector<std::string> &args, const Redis::CommandAttributes &attr);
   void UpdateWatchedKeysManually(const std::vector<std::string> &keys);
   void WatchKey(Redis::Connection *conn, const std::vector<std::string> &keys);
-  bool IsWatchedKeysModified(Redis::Connection *conn);
+  static bool IsWatchedKeysModified(Redis::Connection *conn);
   void ResetWatchedKeys(Redis::Connection *conn);
 
 #ifdef ENABLE_OPENSSL
@@ -238,7 +237,7 @@ class Server {
   void cron();
   void recordInstantaneousMetrics();
   void delConnContext(ConnContext *c);
-  void updateCachedTime();
+  static void updateCachedTime();
   Status autoResizeBlockAndSST();
   void updateWatchedKeysFromRange(const std::vector<std::string> &args, const Redis::CommandKeyRange &range);
   void updateAllWatchedKeys();
@@ -291,7 +290,7 @@ class Server {
   std::map<std::string, std::set<std::shared_ptr<StreamConsumer>>> blocked_stream_consumers_;
 
   // threads
-  RWLock::ReadWriteLock works_concurrency_rw_lock_;
+  std::shared_mutex works_concurrency_rw_lock_;
   std::thread cron_thread_;
   std::thread compaction_checker_thread_;
   TaskRunner task_runner_;

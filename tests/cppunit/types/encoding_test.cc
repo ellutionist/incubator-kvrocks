@@ -18,6 +18,8 @@
  *
  */
 
+#include "encoding.h"
+
 #include <gtest/gtest.h>
 #include <rocksdb/slice.h>
 
@@ -25,8 +27,6 @@
 #include <limits>
 #include <string>
 #include <vector>
-
-#include "encoding.h"
 
 TEST(Util, EncodeAndDecodeDouble) {
   std::vector<double> values = {-1234, -100.1234, -1.2345, 0, 1.2345, 100.1234, 1234};
@@ -50,7 +50,7 @@ TEST(Util, EncodeAndDecodeInt32AsVarint32) {
     std::string buf;
     PutVarint32(&buf, values[i]);
     EXPECT_EQ(buf.size(), encoded_sizes[i]);
-    uint32_t result;
+    uint32_t result = 0;
     rocksdb::Slice s(buf);
     GetVarint32(&s, &result);
     ASSERT_EQ(result, values[i]);

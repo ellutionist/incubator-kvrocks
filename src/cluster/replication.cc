@@ -132,7 +132,7 @@ void FeedSlaveThread::loop() {
     //    batches strategy, we still send batches if current batch sequence is less
     //    kMaxDelayUpdates than latest sequence.
     if (is_first_repl_batch || batches_bulk.size() >= kMaxDelayBytes || updates_in_batches >= kMaxDelayUpdates ||
-        srv_->storage_->LatestSeq() - batch.sequence <= kMaxDelayUpdates) {
+        srv_->storage_->LatestSeqNumber() - batch.sequence <= kMaxDelayUpdates) {
       // Send entire bulk which contain multiple batches
       auto s = Util::SockSend(conn_->GetFD(), batches_bulk);
       if (!s.IsOK()) {
@@ -198,7 +198,7 @@ LOOP_LABEL:
   assert(self->handler_idx_ <= self->handlers_.size());
   DLOG(INFO) << "[replication] Execute handler[" << self->getHandlerName(self->handler_idx_) << "]";
   auto st = self->getHandlerFunc(self->handler_idx_)(bev, self->repl_);
-  self->repl_->last_io_time_.store(time(nullptr), std::memory_order_relaxed);
+  self->repl_->last_io_time_.store(Util::GetTimeStamp(), std::memory_order_relaxed);
   switch (st) {
     case CBState::NEXT:
       ++self->handler_idx_;
@@ -469,7 +469,7 @@ ReplicationThread::CBState ReplicationThread::replConfReadCB(bufferevent *bev, v
 
 ReplicationThread::CBState ReplicationThread::tryPSyncWriteCB(bufferevent *bev, void *ctx) {
   auto self = static_cast<ReplicationThread *>(ctx);
-  auto cur_seq = self->storage_->LatestSeq();
+  auto cur_seq = self->storage_->LatestSeqNumber();
   auto next_seq = cur_seq + 1;
   std::string replid;
 
